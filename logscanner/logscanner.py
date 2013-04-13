@@ -17,15 +17,15 @@ def main():
 			state.reset()
 			ins = db.insert(doc).run()
 			if ins['inserted'] < 1:
-				print ins['first_error']
+				print (ins['first_error'])
 				exit(1)
 			else:
 				inserted += 1
 
 	if state.game_running():
-		print "There is still a game running but we reached the end of input"
+		print ("There is still a game running but we reached the end of input")
 	
-	print "Inserted %d document(s), skipped %d document(s)" % (inserted, state.get_skipped())
+	print ("Inserted %d document(s), skipped %d document(s)" % (inserted, state.get_skipped()))
 	exit(0)
 
 class GameState:
@@ -132,7 +132,7 @@ class GameState:
 			# blank line perhaps
 			m = re.match('\[([0-9:]+)\] (\*\*\*|\* [^ ]+|<.+?>)', line)
 			if m == None:
-				print "Unrecognized line " + line
+				print ("Unrecognized line " + line)
 				return
 
 		time = m.group(1)
@@ -156,8 +156,8 @@ class GameState:
 		fname = fileinput.filename()
 		m = re.search('([0-9]{4})/?([0-9]{2})/?([0-9]{2})', fname)
 		if m == None:
-			print "Could not find timestamp for file " + fname
-			print "Skipping file..."
+			print ("Could not find timestamp for file " + fname)
+			print ("Skipping file...")
 			fileinput.nextfile()
 			return
 		timestamp = "%s%s%s%s%s%s" % (m.group(1), m.group(2), m.group(3), time[0:2], time[3:5], time[6:8])
@@ -176,7 +176,7 @@ class GameState:
 			if m != None:
 				# if we are currently running a game, this is a bug
 				if self.game:
-					print "!!! BUG !!! Starting a new game when a game is already running! File: %s Line: %s" % (fileinput.filename(), fileinput.filelineno())
+					print ("!!! BUG !!! Starting a new game when a game is already running! File: %s Line: %s" % (fileinput.filename(), fileinput.filelineno()))
 					exit(1)
 				# started a new game, first group is the nicks of who are playing
 				self.game = True
@@ -341,6 +341,6 @@ class GameState:
 
 if __name__ == "__main__":
 	if len(sys.argv) < 2:
-		print "Usage: python " + sys.argv[0] + " <logfile ...>"
+		print ("Usage: python " + sys.argv[0] + " <logfile ...>")
 		exit(0)
 	main()
