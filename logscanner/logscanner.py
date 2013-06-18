@@ -3,9 +3,10 @@ import fileinput
 import re
 import sys
 import json
+from datetime import datetime, timedelta
 
 def main():
-	r.connect(db='wolfgame').repl()
+	r.connect().repl()
 	db = r.db('wolfgame').table('games')
 	# init empty gamestate
 	state = GameState(db)
@@ -14,9 +15,11 @@ def main():
 		state.add_line(line)
 		if state.game_finished():
 			doc = state.get_state()
+			replace = state.replace
 			state.reset()
-			ins = db.insert(doc).run()
-			if ins['inserted'] < 1:
+			ins = db.insert(doc, upsert=True).run()
+
+			if 'errors' in ins and ins['errors'] > 0:
 				print (ins['first_error'])
 				exit(1)
 			else:
@@ -29,7 +32,7 @@ def main():
 	exit(0)
 
 class GameState:
-	def __init__(self, db, botnicks = ["pywolf", "lycanthrope"], ownnicks = ["woffle"]):
+	def __init__(self, db, botnicks = ["pywolf", "lycanthrope"], ownnicks = ["woffle", "moonmoon"]):
 		self.db = db
 		self.botnicks = botnicks
 		self.ownnicks = ownnicks
@@ -64,6 +67,7 @@ class GameState:
 					"The mob drags a protesting (.*?) to the hanging tree\. S/He succumbs to the will of the horde, and is hanged\. It is discovered \(s\)he was a .*?\.",
 					"Resigned to his/her fate, (.*?) is led to the gallows\. After death, it is discovered \(s\)he was a .*?\.",
 					"As s/he is about to be lynched, (.*?), the .*?, throws a grenade at the mob",
+					"As the real wolves run away from the murderous mob, (.*?) trips and falls\. It is discovered that \(s\)he was a .*?\.?",
 					"As the sun sets, the villagers agree to retire to their beds and wait for morning", # no lynch
 				]
 		# which messages are associated with a kill
@@ -79,7 +83,7 @@ class GameState:
 				]
 		# which messages are associated with a quit
 		self.quitmessages = [
-					"(?:.*?) is forcing (.*?) to leave",                # !fquit
+					".*? is forcing (.*?) to leave",                    # !fquit
 					"(.*?) died of an unknown disease",                 # !quit
 					"(.*?) died due to falling off a cliff",            # /kick
 					"(.*?) died due to a fatal attack by wild animals", # /quit
@@ -114,13 +118,17 @@ class GameState:
 		self.quit = []
 		self.idled = []
 		self.shot = {}
-		self.nights = 0
-		self.days = 0
+		self.nights = []
+		self.days = []
 		self.daytime = 0
 		self.nighttime = 0
 		self.gamesize = 0
 		self.winner = "Unknown"
 		self.id = 0 # id is the game start timestamp
+		self.schema = 2
+		self.replace = False
+		self.curday = 0
+		self.curnight = 0
 
 	def add_line(self, line):
 		# Parse out timestamp, nick, and message
@@ -164,7 +172,7 @@ class GameState:
 
 		# If we or the bot joins/quits, wipe whatever current game is in progress as we lost it
 		if nick == "**Server**":
-			m = re.match('(?:Joins|Quits): (.*?) \((.*?)\)', message)
+			m = re.match('(?:Joins|Quits|Parts): (.*?) \((.*?)\)', message)
 			if m != None:
 				if m.group(1) in self.ownnicks or m.group(1) in self.botnicks:
 					self.reset()
@@ -184,11 +192,14 @@ class GameState:
 				self.players = m.group(1).split(', ')
 				self.gamesize = len(self.players)
 				# check if id already exists in the database, if so we can just skip over this game (saves a lot of processing/regexes)
+				# only do this if we aren't updating the schema
 				doc = self.db.get(self.id).run()
-				if doc:
+				if doc and doc['schema'] == self.schema:
 					self.skipped += 1
 					self.reset()
 					return
+				elif doc:
+					self.replace = True
 		
 		# If we have a game running, record the line
 		if self.game:
@@ -217,12 +228,14 @@ class GameState:
 				if m != None:
 					# increment days or nights (current day is self.days + 1)
 					if m.group(1) == 'Day':
-						self.days += 1
+						self.days.append(int(m.group(2)) * 60 + int(m.group(3)))
+						self.curday += 1
 					elif m.group(1) == 'Night':
-						self.nights += 1
+						self.nights.append(int(m.group(2)) * 60 + int(m.group(3)))
+						self.curnight += 1
 				
-				curday = str(self.days + 1)
-				curnight = str(self.nights)
+				curday = str(self.curday + 1)
+				curnight = str(self.curnight)
 
 				for msg in self.lynchmessages:
 					m = re.match(msg, message)
@@ -291,6 +304,9 @@ class GameState:
 						# remove any trailing periods
 						item = item.rstrip('.')
 						m = re.match('The (.*?) (were|was) (.*)', item)
+						# variable is a troll and faked some roles, so make sure we only record valid ones
+						if m.group(1) not in self.rolemap:
+							continue
 						# determine the number of nicks in the 3rd group
 						if m.group(2) == 'was':
 							# one nick only, easy
@@ -325,7 +341,7 @@ class GameState:
 					'daytime': self.daytime,
 					'gamesize': self.gamesize,
 					'winner': self.winner,
-					'schema': 1
+					'schema': self.schema
 				}
 		return state
 
