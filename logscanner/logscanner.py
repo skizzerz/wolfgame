@@ -32,10 +32,11 @@ def main():
 	exit(0)
 
 class GameState:
-	def __init__(self, db, botnicks = ["pywolf", "lycanthrope"], ownnicks = ["woffle", "moonmoon"]):
+	def __init__(self, db, botnicks = ["pywolf", "lycanthrope", "seerwolf", "lykos", "lykosmas", "lykos2014"], ownnicks = ["woffle", "moonmoon", "Skizzerz", "forest_fire", "werewolf"]):
 		self.db = db
 		self.botnicks = botnicks
 		self.ownnicks = ownnicks
+		self.othernicks = []
 		self.skipped = 0
 		# mapping of role name to key in roles (accounts for plural)
 		self.rolemap = {
@@ -64,10 +65,11 @@ class GameState:
 		self.lynchmessages = [
 					"The villagers, after much debate, finally decide on lynching (.*?), who turned out to be\.\.\. a .*?\.",
 					"Under a lot of noise, the pitchfork-bearing villagers lynch (.*?), who turned out to be\.\.\. a .*?\.",
-					"The mob drags a protesting (.*?) to the hanging tree\. S/He succumbs to the will of the horde, and is hanged\. It is discovered \(s\)he was a .*?\.",
-					"Resigned to his/her fate, (.*?) is led to the gallows\. After death, it is discovered \(s\)he was a .*?\.",
-					"As s/he is about to be lynched, (.*?), the .*?, throws a grenade at the mob",
-					"As the real wolves run away from the murderous mob, (.*?) trips and falls\. It is discovered that \(s\)he was a .*?\.?",
+					"The mob drags a protesting (.*?) to the hanging tree",
+					"Despite protests, the mob drags their victim to the hanging tree\. (.*?) succumbs to the will of the horde",
+					"Resigned to (?:his/her fate|the inevitable), (.*?) is led to the gallows",
+					"(?:As s/he is about to be lynched|Before the rope is pulled), (.*?), the .*?, throws a grenade at the mob",
+					"As the real wolves run away from the murderous mob, (.*?) trips and falls",
 					"As the sun sets, the villagers agree to retire to their beds and wait for morning", # no lynch
 				]
 		# which messages are associated with a kill
@@ -85,9 +87,12 @@ class GameState:
 		self.quitmessages = [
 					".*? is forcing (.*?) to leave",                    # !fquit
 					"(.*?) died of an unknown disease",                 # !quit
+					"(.*?), a .*?, has died of an unknown disease",
 					"(.*?) died due to falling off a cliff",            # /kick
 					"(.*?) died due to a fatal attack by wild animals", # /quit
-					"(.*?) died due to eating poisonous berries"        # /part
+					"(.*?) was mauled by wild animals",
+					"(.*?) died due to eating poisonous berries",       # /part
+					"(.*?), a .*?, ate some poisonous berries"
 				]
 		# which messages are associated with an idle
 		self.idlemessages = [
@@ -99,7 +104,8 @@ class GameState:
 					["(.*?) is not a wolf but was accidentally fatally injured", "headshot"],
 					["(.*?) is a villager and is injured", "hit"],
 					[".*? is a lousy shooter", "miss"],
-					[".*? should clean his/her weapons more often", "explode"]
+					[".*? should clean his/her weapons more often", "explode"],
+					[".*?'s gun was poorly maintained and has exploded", "explode"]
 				]
 		# which roles are counted as wolfteam
 		self.wolfroles = ['wolf', 'traitor', 'werecrow']
@@ -179,9 +185,9 @@ class GameState:
 					return
 
 		# Do we need to start a new game?
-		if nick in self.botnicks:
-			m = re.match('(.*): Welcome to Werewolf, the popular detective/social party game \(a theme of Mafia\)\.', message)
-			if m != None:
+		m = re.match('(.*): Welcome to Werewolf, the popular detective/social party game \(a theme of Mafia\)\.', message)
+		if m != None:
+			if nick in self.botnicks:
 				# if we are currently running a game, this is a bug
 				if self.game:
 					print ("!!! BUG !!! Starting a new game when a game is already running! File: %s Line: %s" % (fileinput.filename(), fileinput.filelineno()))
@@ -200,6 +206,9 @@ class GameState:
 					return
 				elif doc:
 					self.replace = True
+			elif nick not in self.othernicks:
+				self.othernicks.append(nick)
+				print ("Possible missed bot nick: %s" % nick)
 		
 		# If we have a game running, record the line
 		if self.game:
