@@ -6,10 +6,10 @@ import json
 from datetime import datetime, timedelta
 
 def main():
-	r.connect().repl()
-	db = r.db('wolfgame').table('games')
+	conn = r.connect()
+	conn.use('wolfgame')
 	# init empty gamestate
-	state = GameState(db)
+	state = GameState(conn)
 	inserted = 0
 	for line in fileinput.input():
 		state.add_line(line)
@@ -17,10 +17,16 @@ def main():
 			doc = state.get_state()
 			replace = state.replace
 			state.reset()
-			ins = db.insert(doc, upsert=True).run()
+			lines = { 'id': doc['id'], 'lines': doc['lines'] }
+			del doc['lines']
+			ins = r.table('games').insert(doc, upsert=True).run(conn)
+			ins2 = r.table('lines').insert(lines, upsert=True).run(conn)
 
 			if 'errors' in ins and ins['errors'] > 0:
 				print (ins['first_error'])
+				exit(1)
+			elif 'errors' in ins2 and ins2['errors'] > 0:
+				print (ins2['first_error'])
 				exit(1)
 			else:
 				inserted += 1
@@ -32,7 +38,7 @@ def main():
 	exit(0)
 
 class GameState:
-	def __init__(self, db, botnicks = ["pywolf", "lycanthrope", "seerwolf", "lykos", "lykosmas", "lykos2014"], ownnicks = ["woffle", "moonmoon", "Skizzerz", "forest_fire", "werewolf"]):
+	def __init__(self, db, botnicks = ["pywolf", "lycanthrope", "seerwolf", "lykos", "lykosmas", "lykos2014"], ownnicks = ["woffle", "moonmoon", "Skizzerz", "forest_fire", "wolfe"]):
 		self.db = db
 		self.botnicks = botnicks
 		self.ownnicks = ownnicks
@@ -99,7 +105,10 @@ class GameState:
 					"(.*?) didn't get out of bed for a very long time"  # idle
 				]
 		# which messages are associated with gunner shooting, indicate shot type as well
+		# "shoot" is a special key to indicate that target should be applied as the gunner for the next gun message
+		# (for miss/explode where the target isn't said in the message)
 		self.shotmessages = [
+					[".*? shoots (.*?) with a silver bullet", "shoot"],
 					["(.*?) is a .*?, and is dying from the silver bullet", "kill"],
 					["(.*?) is not a wolf but was accidentally fatally injured", "headshot"],
 					["(.*?) is a villager and is injured", "hit"],
@@ -131,10 +140,14 @@ class GameState:
 		self.gamesize = 0
 		self.winner = "Unknown"
 		self.id = 0 # id is the game start timestamp
-		self.schema = 2
+		self.schema = 5
 		self.replace = False
 		self.curday = 0
 		self.curnight = 0
+		self.startfile = ""
+		self.startline = 0
+		self.options = {'wolfgunner': False, 'hiddentraitor': False, 'nightgunner': False}
+		self.prevtarget = None
 
 	def add_line(self, line):
 		# Parse out timestamp, nick, and message
@@ -190,16 +203,26 @@ class GameState:
 			if nick in self.botnicks:
 				# if we are currently running a game, this is a bug
 				if self.game:
-					print ("!!! BUG !!! Starting a new game when a game is already running! File: %s Line: %s" % (fileinput.filename(), fileinput.filelineno()))
+					print ("!!! BUG !!! Starting a new game when a game is already running! File: %s Line: %s (started in %s at line %s)" % (fileinput.filename(), fileinput.filelineno(), self.startfile, self.startline))
 					exit(1)
 				# started a new game, first group is the nicks of who are playing
 				self.game = True
 				self.id = timestamp
 				self.players = m.group(1).split(', ')
 				self.gamesize = len(self.players)
+				self.startfile = fileinput.filename()
+				self.startline = fileinput.filelineno()
+				# now set game options (wolfgunner, nightgunner, hiddentraitor)
+				# wolfgunner and nightgunner are on if the game took place on or after 9/6/2013
+				# hiddentraitor is on if the game took place on or after 2/10/2014
+				if int(timestamp) > 20130906000000:
+					self.options['wolfgunner'] = True
+					self.options['nightgunner'] = True
+				if int(timestamp) > 20140210000000:
+					self.options['hiddentraitor'] = True
 				# check if id already exists in the database, if so we can just skip over this game (saves a lot of processing/regexes)
 				# only do this if we aren't updating the schema
-				doc = self.db.get(self.id).run()
+				doc = r.table('games').get(self.id).run(self.db)
 				if doc and doc['schema'] == self.schema:
 					self.skipped += 1
 					self.reset()
@@ -217,9 +240,18 @@ class GameState:
 			
 			# determine if we need to add something to nickmap
 			if nick == "**Server**":
-				m = re.match('(.*?) is now known as (.*?)', message)
+				m = re.match('(.*?) is now known as (.*)', message)
 				if m != None:
-					self.nickmap[m.group(2)] = self.nickmap.get(m.group(1), m.group(1))
+					oldnick = m.group(1)
+					newnick = m.group(2)
+					self.nickmap[newnick] = self.nickmap.get(oldnick, oldnick)
+					if oldnick in self.botnicks:
+						# if it is any of these people, the bot never actually changed
+						never = ['Iciloo', 'sid|1']
+						if newnick not in never:
+							# HALP, THE BOT CHANGED NICKS
+							print ("Bot changed nicks from %s to %s" % (oldnick, newnick))
+							self.botnicks.append(newnick)
 			
 			# record the line
 			try:
@@ -242,6 +274,7 @@ class GameState:
 					elif m.group(1) == 'Night':
 						self.nights.append(int(m.group(2)) * 60 + int(m.group(3)))
 						self.curnight += 1
+					return
 				
 				curday = str(self.curday + 1)
 				curnight = str(self.curnight)
@@ -254,6 +287,7 @@ class GameState:
 						if len(m.groups()) == 1:
 							# have a victim
 							self.lynched[curday].append(m.group(1))
+						return
 				
 				for msg in self.killmessages:
 					m = re.match(msg, message)
@@ -262,27 +296,34 @@ class GameState:
 							self.killed[curnight] = []
 						if len(m.groups()) == 1:
 							self.killed[curnight].append(m.group(1))
+						return
 
 				for msg in self.shotmessages:
 					m = re.match(msg[0], message)
 					if m != None:
 						if curday not in self.shot:
 							self.shot[curday] = []
-						if msg[1] == "explode" or msg[1] == "miss":
-							target = None
+						if msg[1] == "shoot":
+							self.prevtarget = m.group(1)
+							return
+						elif msg[1] == "explode" or msg[1] == "miss":
+							target = self.prevtarget
 						else:
 							target = m.group(1)
 						self.shot[curday].append({'target': target, 'outcome': msg[1]})
+						return
 
 				for msg in self.quitmessages:
 					m = re.match(msg, message)
 					if m != None:
 						self.quit.append(m.group(1))
+						return
 
 				for msg in self.idlemessages:
 					m = re.match(msg, message)
 					if m != None:
 						self.idled.append(m.group(1))
+						return
 
 				# is game over?
 				if not self.finished:
@@ -299,6 +340,7 @@ class GameState:
 							self.winner = "village"
 						else:
 							self.winner = "wolves"
+						return
 				else:
 					# record time and role data and mark game as over
 					# time is before role data, so don't mark over until we have both
@@ -313,6 +355,9 @@ class GameState:
 						# remove any trailing periods
 						item = item.rstrip('.')
 						m = re.match('The (.*?) (were|was) (.*)', item)
+						if m == None:
+							print ("Failed to match regex to %s" % (message))
+							continue
 						# variable is a troll and faked some roles, so make sure we only record valid ones
 						if m.group(1) not in self.rolemap:
 							continue
@@ -350,7 +395,8 @@ class GameState:
 					'daytime': self.daytime,
 					'gamesize': self.gamesize,
 					'winner': self.winner,
-					'schema': self.schema
+					'schema': self.schema,
+					'options': self.options
 				}
 		return state
 
